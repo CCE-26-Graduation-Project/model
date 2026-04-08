@@ -13,15 +13,37 @@ processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 async def embed_text(text: str):
     inputs = processor(text=[text], return_tensors="pt", padding=True)
     outputs = model.get_text_features(**inputs)
-    embedding = outputs[0].detach().numpy().tolist()  
-    return {"embedding": embedding}
+
+    if hasattr(outputs, "pooler_output"):
+        tensor = outputs.pooler_output
+        if hasattr(model, "text_projection"):
+            tensor = model.text_projection(tensor)
+    else:
+        tensor = outputs
+
+    embedding = tensor.squeeze(0).detach().cpu().tolist()
+    return {"embedding": embedding, "length": len(embedding)}
 
 @app.post("/embed-image")
 async def embed_image(file: UploadFile = File(...)):
     image = Image.open(io.BytesIO(await file.read()))
     inputs = processor(images=image, return_tensors="pt")
-    embedding = outputs[0].detach().numpy().tolist() 
-    return {"embedding": embedding}
+    outputs = model.get_image_features(**inputs)
+
+    if isinstance(outputs, torch.Tensor):
+        tensor = outputs
+    elif hasattr(outputs, "image_embeds") and outputs.image_embeds is not None:
+        tensor = outputs.image_embeds
+    elif hasattr(outputs, "pooler_output"):
+        tensor = outputs.pooler_output
+        # Only project if this is pre-projection size (usually 768)
+        if tensor.shape[-1] == model.visual_projection.in_features:
+            tensor = model.visual_projection(tensor)
+    else:
+        raise ValueError("Unsupported image output type")
+
+    embedding = tensor.squeeze(0).detach().cpu().tolist()
+    return {"embedding": embedding, "length": len(embedding)}
 
 if __name__ == "__main__":
     import uvicorn
